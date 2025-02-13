@@ -1,6 +1,8 @@
 # HubSpot MCP Server
 [![Docker Hub](https://img.shields.io/docker/v/buryhuang/mcp-hubspot?label=Docker%20Hub)](https://hub.docker.com/r/buryhuang/mcp-hubspot) [![smithery badge](https://smithery.ai/badge/mcp-hubspot)](https://smithery.ai/server/mcp-hubspot/prod)
 
+[![smithery badge](https://smithery.ai/badge/buryhuang/mcp-hubspot)](https://smithery.ai/server/buryhuang/mcp-hubspot)
+
 ## Overview
 
 A Model Context Protocol (MCP) server implementation that provides integration with HubSpot CRM. This server enables AI models to interact with HubSpot data and operations through a standardized interface.
@@ -109,6 +111,14 @@ The server offers several tools for managing HubSpot objects:
 
 
 ## Setup
+
+### Installing via Smithery
+
+To install buryhuang/mcp-hubspot for Claude Desktop automatically via [Smithery](https://smithery.ai/server/buryhuang/mcp-hubspot):
+
+```bash
+npx -y @smithery/cli install buryhuang/mcp-hubspot --client claude
+```
 
 ### Prerequisites
 
