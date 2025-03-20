@@ -558,6 +558,10 @@ async def main(access_token: Optional[str] = None):
                 days = arguments.get("days", 7) if arguments else 7
                 limit = arguments.get("limit", 50) if arguments else 50
                 
+                # Ensure days and limit are integers
+                days = int(days) if days is not None else 7
+                limit = int(limit) if limit is not None else 50
+                
                 # Get recent engagements
                 results = hubspot.get_recent_engagements(days=days, limit=limit)
                 return [types.TextContent(type="text", text=results)]
