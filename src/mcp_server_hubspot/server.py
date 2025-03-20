@@ -328,6 +328,9 @@ async def main(access_token: Optional[str] = None):
             return str(hubspot.get_contacts())
         elif path == "hubspot_companies":
             return str(hubspot.get_companies())
+        elif path == "hubspot_recent_engagements":
+            # Get engagements from the last 3 days by default
+            return str(hubspot.get_recent_engagements(days=3, limit=50))
         else:
             raise ValueError(f"Unknown resource path: {path}")
 

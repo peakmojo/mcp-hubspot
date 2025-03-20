@@ -103,8 +103,10 @@ The server offers several tools for managing HubSpot objects:
 
 #### Engagement Tools
 * `hubspot_get_recent_engagements`
-  * Get HubSpot engagements from all companies and contacts from the last 3 days
-  * No input required
+  * Get recent engagement activities across all contacts and companies
+  * Input:
+    * `days` (integer, optional): Number of days to look back (default: 7)
+    * `limit` (integer, optional): Maximum number of engagements to return (default: 50)
   * Returns: Array of engagement objects with full metadata
 
 
@@ -165,6 +167,14 @@ docker run \
   buryhuang/mcp-hubspot:latest
 ```
 
+You can also pass the access token directly as a command-line argument:
+
+```bash
+docker run \
+  buryhuang/mcp-hubspot:latest \
+  --access-token your_access_token_here
+```
+
 ## Cross-Platform Publishing
 
 To publish the Docker image for multiple platforms, you can use the `docker buildx` command. Follow these steps:
@@ -208,6 +218,26 @@ npx -y @smithery/cli@latest install mcp-hubspot --client claude
         "-e",
         "HUBSPOT_ACCESS_TOKEN=your_access_token_here",
         "buryhuang/mcp-hubspot:latest"
+      ]
+    }
+  }
+}
+```
+
+You can also use the command-line argument:
+
+```json
+{
+  "mcpServers": {
+    "hubspot": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "buryhuang/mcp-hubspot:latest",
+        "--access-token",
+        "your_access_token_here"
       ]
     }
   }
