@@ -11,4 +11,4 @@ COPY . /app
 RUN pip install --no-cache-dir .
 
 # Run the server
-ENTRYPOINT ["mcp-server-hubspot"] 
+ENTRYPOINT ["mcp-server-hubspot", "--access-token", "${HUBSPOT_ACCESS_TOKEN}"] 

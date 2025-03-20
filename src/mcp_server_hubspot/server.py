@@ -13,6 +13,7 @@ from pydantic import AnyUrl
 import json
 from datetime import datetime, timedelta
 from dateutil.tz import tzlocal
+import argparse
 
 logger = logging.getLogger('mcp_hubspot_server')
 
@@ -176,6 +177,124 @@ class HubSpotClient:
             logger.error(f"Exception: {str(e)}")
             return json.dumps({"error": str(e)})
 
+    def get_recent_engagements(self, days: int = 7, limit: int = 50) -> str:
+        """Get recent engagements across all contacts/companies
+        
+        Args:
+            days: Number of days to look back (default: 7)
+            limit: Maximum number of engagements to return (default: 50)
+        """
+        try:
+            # Calculate the date range (past N days)
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=days)
+            
+            # Format timestamps for API call
+            start_timestamp = int(start_time.timestamp() * 1000)  # Convert to milliseconds
+            end_timestamp = int(end_time.timestamp() * 1000)  # Convert to milliseconds
+            
+            # Get all recent engagements
+            engagements_response = self.client.api_request({
+                "method": "GET",
+                "path": f"/engagements/v1/engagements/recent/modified",
+                "params": {
+                    "count": limit,
+                    "since": start_timestamp,
+                    "offset": 0
+                }
+            }).json()
+            
+            # Format the engagements similar to company_activity
+            formatted_engagements = []
+            
+            for engagement in engagements_response.get('results', []):
+                engagement_data = engagement.get('engagement', {})
+                metadata = engagement.get('metadata', {})
+                
+                formatted_engagement = {
+                    "id": engagement_data.get("id"),
+                    "type": engagement_data.get("type"),
+                    "created_at": engagement_data.get("createdAt"),
+                    "last_updated": engagement_data.get("lastUpdated"),
+                    "created_by": engagement_data.get("createdBy"),
+                    "modified_by": engagement_data.get("modifiedBy"),
+                    "timestamp": engagement_data.get("timestamp"),
+                    "associations": engagement.get("associations", {})
+                }
+                
+                # Add type-specific metadata formatting identical to company_activity
+                if engagement_data.get("type") == "NOTE":
+                    formatted_engagement["content"] = metadata.get("body", "")
+                elif engagement_data.get("type") == "EMAIL":
+                    formatted_engagement["content"] = {
+                        "subject": metadata.get("subject", ""),
+                        "from": {
+                            "raw": metadata.get("from", {}).get("raw", ""),
+                            "email": metadata.get("from", {}).get("email", ""),
+                            "firstName": metadata.get("from", {}).get("firstName", ""),
+                            "lastName": metadata.get("from", {}).get("lastName", "")
+                        },
+                        "to": [{
+                            "raw": recipient.get("raw", ""),
+                            "email": recipient.get("email", ""),
+                            "firstName": recipient.get("firstName", ""),
+                            "lastName": recipient.get("lastName", "")
+                        } for recipient in metadata.get("to", [])],
+                        "cc": [{
+                            "raw": recipient.get("raw", ""),
+                            "email": recipient.get("email", ""),
+                            "firstName": recipient.get("firstName", ""),
+                            "lastName": recipient.get("lastName", "")
+                        } for recipient in metadata.get("cc", [])],
+                        "bcc": [{
+                            "raw": recipient.get("raw", ""),
+                            "email": recipient.get("email", ""),
+                            "firstName": recipient.get("firstName", ""),
+                            "lastName": recipient.get("lastName", "")
+                        } for recipient in metadata.get("bcc", [])],
+                        "sender": {
+                            "email": metadata.get("sender", {}).get("email", "")
+                        },
+                        "body": metadata.get("text", "") or metadata.get("html", "")
+                    }
+                elif engagement_data.get("type") == "TASK":
+                    formatted_engagement["content"] = {
+                        "subject": metadata.get("subject", ""),
+                        "body": metadata.get("body", ""),
+                        "status": metadata.get("status", ""),
+                        "for_object_type": metadata.get("forObjectType", "")
+                    }
+                elif engagement_data.get("type") == "MEETING":
+                    formatted_engagement["content"] = {
+                        "title": metadata.get("title", ""),
+                        "body": metadata.get("body", ""),
+                        "start_time": metadata.get("startTime"),
+                        "end_time": metadata.get("endTime"),
+                        "internal_notes": metadata.get("internalMeetingNotes", "")
+                    }
+                elif engagement_data.get("type") == "CALL":
+                    formatted_engagement["content"] = {
+                        "body": metadata.get("body", ""),
+                        "from_number": metadata.get("fromNumber", ""),
+                        "to_number": metadata.get("toNumber", ""),
+                        "duration_ms": metadata.get("durationMilliseconds"),
+                        "status": metadata.get("status", ""),
+                        "disposition": metadata.get("disposition", "")
+                    }
+                
+                formatted_engagements.append(formatted_engagement)
+            
+            # Convert any datetime fields and return
+            converted_engagements = convert_datetime_fields(formatted_engagements)
+            return json.dumps(converted_engagements)
+            
+        except ApiException as e:
+            logger.error(f"API Exception: {str(e)}")
+            return json.dumps({"error": str(e)})
+        except Exception as e:
+            logger.error(f"Exception: {str(e)}")
+            return json.dumps({"error": str(e)})
+
 async def main(access_token: Optional[str] = None):
     """Run the HubSpot MCP server."""
     logger.info("Server starting")
@@ -267,6 +386,17 @@ async def main(access_token: Optional[str] = None):
                         "company_id": {"type": "string", "description": "HubSpot company ID"}
                     },
                     "required": ["company_id"]
+                },
+            ),
+            types.Tool(
+                name="hubspot_get_recent_engagements",
+                description="Get recent engagement activities across all contacts and companies",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "days": {"type": "integer", "description": "Number of days to look back (default: 7)"},
+                        "limit": {"type": "integer", "description": "Maximum number of engagements to return (default: 50)"}
+                    },
                 },
             ),
         ]
@@ -422,6 +552,15 @@ async def main(access_token: Optional[str] = None):
                     raise ValueError("Missing arguments for get_company_activity")
                 results = hubspot.get_company_activity(arguments["company_id"])
                 return [types.TextContent(type="text", text=results)]
+                
+            elif name == "hubspot_get_recent_engagements":
+                # Extract parameters with defaults if not provided
+                days = arguments.get("days", 7) if arguments else 7
+                limit = arguments.get("limit", 50) if arguments else 50
+                
+                # Get recent engagements
+                results = hubspot.get_recent_engagements(days=days, limit=limit)
+                return [types.TextContent(type="text", text=results)]
 
             else:
                 raise ValueError(f"Unknown tool: {name}")
@@ -448,4 +587,12 @@ async def main(access_token: Optional[str] = None):
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main()) 
+    import argparse
+    
+    # Set up command line argument parser
+    parser = argparse.ArgumentParser(description="Run the HubSpot MCP server")
+    parser.add_argument("--access-token", 
+                        help="HubSpot API access token (overrides HUBSPOT_ACCESS_TOKEN environment variable)")
+    
+    args = parser.parse_args()
+    asyncio.run(main(access_token=args.access_token)) 
