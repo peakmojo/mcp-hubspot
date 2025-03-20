@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A simple Hubspot MCP server"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["mcp>=1.0.0", "hubspot-api-client>=8.1.0", "python-dotenv>=1.0.0"]
+dependencies = ["mcp>=1.4.1", "hubspot-api-client>=11.1.0", "python-dotenv>=1.0.1"]
 
 [build-system]
 requires = ["hatchling"]
