@@ -141,13 +141,14 @@ async def main(access_token: Optional[str] = None):
                 },
             ),
             types.Tool(
-                name="hubspot_get_recent_emails",
-                description="Get recent emails from HubSpot",
+                name="hubspot_get_recent_conversations",
+                description="Get recent conversation threads from HubSpot with their messages",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "limit": {"type": "integer", "description": "Maximum number of emails to return (default: 10)"},
-                        "after": {"type": "string", "description": "Pagination token"}
+                        "limit": {"type": "integer", "description": "Maximum number of threads to return (default: 10)"},
+                        "after": {"type": "string", "description": "Pagination token"},
+                        "refresh_cache": {"type": "boolean", "description": "Whether to refresh the threads cache (default: false)"}
                     },
                 },
             ),
@@ -322,29 +323,30 @@ async def main(access_token: Optional[str] = None):
                 
                 return [types.TextContent(type="text", text=results)]
                 
-            elif name == "hubspot_get_recent_emails":
+            elif name == "hubspot_get_recent_conversations":
                 # Extract parameters with defaults if not provided
                 limit = arguments.get("limit", 10) if arguments else 10
                 after = arguments.get("after") if arguments else None
+                refresh_cache = arguments.get("refresh_cache", False) if arguments else False
                 
                 # Ensure limit is an integer
                 limit = int(limit) if limit is not None else 10
                 
-                # Get recent emails with pagination
-                logger.debug(f"Getting recent emails with limit={limit}, after={after}")
-                results = hubspot.get_recent_emails(limit=limit, after=after)
+                # Get recent conversations with pagination
+                logger.debug(f"Getting recent conversations with limit={limit}, after={after}, refresh_cache={refresh_cache}")
+                results = hubspot.get_recent_conversations(limit=limit, after=after, refresh_cache=refresh_cache)
                 
                 # Store in FAISS for future reference
                 try:
                     data = results.get("results", [])
                     if data:
                         metadata_extras = {"limit": limit, "after": after}
-                        logger.debug(f"Preparing to store {len(data)} email data items in FAISS")
+                        logger.debug(f"Preparing to store {len(data)} conversation data items in FAISS")
                         logger.debug(f"Metadata extras: {metadata_extras}")
                         store_in_faiss(
                             faiss_manager=faiss_manager,
                             data=data,
-                            data_type="email",
+                            data_type="conversation",
                             model=embedding_model,
                             metadata_extras=metadata_extras
                         )
@@ -353,10 +355,19 @@ async def main(access_token: Optional[str] = None):
                         faiss_manager.save_today_index()
                         logger.debug("Index saving completed")
                 except Exception as e:
-                    logger.error(f"Error storing emails in FAISS: {str(e)}", exc_info=True)
+                    logger.error(f"Error storing conversations in FAISS: {str(e)}", exc_info=True)
                 
-                # Return results as JSON
-                return [types.TextContent(type="text", text=json.dumps(results))]
+                # Truncate message text for API response (while preserving full text in FAISS)
+                truncated_results = results.copy()
+                for thread in truncated_results.get("results", []):
+                    for message in thread.get("messages", []):
+                        if "text" in message:
+                            message["text"] = message["text"][:200] if message["text"] else ""
+                        if "rich_text" in message:
+                            message["rich_text"] = message["rich_text"][:200] if message["rich_text"] else ""
+                
+                # Return truncated results as JSON
+                return [types.TextContent(type="text", text=json.dumps(truncated_results))]
 
             elif name == "hubspot_get_active_companies":
                 # Extract parameters with defaults if not provided

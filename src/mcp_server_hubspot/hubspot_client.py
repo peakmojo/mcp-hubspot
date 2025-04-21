@@ -4,6 +4,7 @@ import json
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from dateutil.tz import tzlocal
+import pathlib
 
 from hubspot import HubSpot
 from hubspot.crm.contacts import SimplePublicObjectInputForCreate
@@ -36,6 +37,29 @@ class HubSpotClient:
             raise ValueError("HUBSPOT_ACCESS_TOKEN environment variable is required")
         
         self.client = HubSpot(access_token=access_token)
+        self.storage_dir = pathlib.Path("storage")
+        self.storage_dir.mkdir(exist_ok=True)
+        self.threads_file = self.storage_dir / "conversation_threads.json"
+        self.threads_cache = self._load_threads_cache()
+
+    def _load_threads_cache(self) -> Dict[str, Any]:
+        """Load conversation threads from cache file if it exists"""
+        try:
+            if self.threads_file.exists():
+                with open(self.threads_file, "r") as f:
+                    return json.load(f)
+            return {"results": [], "paging": {"next": {"after": None}}}
+        except Exception as e:
+            logger.error(f"Error loading threads cache: {str(e)}")
+            return {"results": [], "paging": {"next": {"after": None}}}
+
+    def _save_threads_cache(self, threads_data: Dict[str, Any]) -> None:
+        """Save conversation threads to cache file"""
+        try:
+            with open(self.threads_file, "w") as f:
+                json.dump(threads_data, f, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving threads cache: {str(e)}")
 
     def get_recent_companies(self, limit: int = 10) -> str:
         """Get most recently active companies from HubSpot
@@ -306,6 +330,155 @@ class HubSpotClient:
             
             return {
                 "results": converted_emails,
+                "pagination": {
+                    "next": {"after": next_after}
+                }
+            }
+            
+        except ApiException as e:
+            logger.error(f"API Exception: {str(e)}")
+            return {"error": str(e), "results": [], "pagination": {"next": {"after": None}}}
+        except Exception as e:
+            logger.error(f"Exception: {str(e)}")
+            return {"error": str(e), "results": [], "pagination": {"next": {"after": None}}}
+
+    def get_recent_conversations(self, limit: int = 10, after: Optional[str] = None, refresh_cache: bool = False) -> Dict[str, Any]:
+        """Get recent conversation threads from HubSpot with pagination
+        
+        Args:
+            limit: Maximum number of threads to return per page (default: 10)
+            after: Pagination token from a previous call (default: None)
+            refresh_cache: Whether to refresh the threads cache (default: False)
+            
+        Returns:
+            Dictionary containing conversation threads with their messages and pagination token
+        """
+        try:
+            # Use cached threads unless refresh_cache is True or we're paginating
+            if not refresh_cache and not after and self.threads_cache.get("results"):
+                logger.info("Using cached threads")
+                threads_data = self.threads_cache
+            else:
+                # Get a page of threads
+                logger.debug(f"Fetching {limit} threads with after={after}")
+                url = "https://api.hubapi.com/conversations/v3/conversations/threads"
+                params = {"limit": limit}
+                if after:
+                    params["after"] = after
+                
+                threads_response = self.client.api_request({
+                    "method": "GET",
+                    "path": "/conversations/v3/conversations/threads",
+                    "params": params
+                }).json()
+                
+                # Save or update threads cache
+                if not after:  # Only replace full cache when getting first page
+                    self._save_threads_cache(threads_response)
+                    self.threads_cache = threads_response
+                
+                threads_data = threads_response
+            
+            thread_results = threads_data.get("results", [])
+            logger.debug(f"Found {len(thread_results)} threads")
+            
+            if not thread_results:
+                logger.info("No threads found")
+                return {
+                    "results": [],
+                    "pagination": {
+                        "next": {"after": threads_data.get("paging", {}).get("next", {}).get("after")}
+                    }
+                }
+            
+            # Get messages for each thread
+            formatted_threads = []
+            
+            for thread in thread_results:
+                thread_id = thread.get("id")
+                if not thread_id:
+                    continue
+                
+                # Get the last 2 messages for this thread
+                try:
+                    url = f"https://api.hubapi.com/conversations/v3/conversations/threads/{thread_id}/messages"
+                    params = {"limit": 2}  # Get the last 2 messages
+                    
+                    messages_response = self.client.api_request({
+                        "method": "GET",
+                        "path": f"/conversations/v3/conversations/threads/{thread_id}/messages",
+                        "params": params
+                    }).json()
+                    
+                    # Format thread with its messages
+                    message_results = messages_response.get("results", [])
+                    
+                    # Only keep actual messages (not system messages)
+                    actual_messages = [msg for msg in message_results if msg.get("type") == "MESSAGE"]
+                    
+                    formatted_thread = {
+                        "id": thread_id,
+                        "created_at": thread.get("createdAt"),
+                        "status": thread.get("status"),
+                        "inbox_id": thread.get("inboxId"),
+                        "associated_contact_id": thread.get("associatedContactId"),
+                        "spam": thread.get("spam", False),
+                        "archived": thread.get("archived", False),
+                        "assigned_to": thread.get("assignedTo"),
+                        "latest_message_timestamp": thread.get("latestMessageTimestamp"),
+                        "messages": []
+                    }
+                    
+                    # Add formatted messages
+                    for msg in actual_messages:
+                        sender_info = {}
+                        if msg.get("senders") and len(msg.get("senders")) > 0:
+                            sender = msg.get("senders")[0]
+                            sender_info = {
+                                "actor_id": sender.get("actorId", ""),
+                                "name": sender.get("name", ""),
+                                "sender_field": sender.get("senderField", ""),
+                                "email": sender.get("deliveryIdentifier", {}).get("value", "") if sender.get("deliveryIdentifier", {}).get("type") == "HS_EMAIL_ADDRESS" else ""
+                            }
+                        
+                        recipients_info = []
+                        for recipient in msg.get("recipients", []):
+                            if recipient.get("deliveryIdentifier", {}).get("type") == "HS_EMAIL_ADDRESS":
+                                recipients_info.append({
+                                    "recipient_field": recipient.get("recipientField", ""),
+                                    "email": recipient.get("deliveryIdentifier", {}).get("value", "")
+                                })
+                        
+                        formatted_message = {
+                            "id": msg.get("id"),
+                            "created_at": msg.get("createdAt"),
+                            "updated_at": msg.get("updatedAt"),
+                            "sender": sender_info,
+                            "recipients": recipients_info,
+                            "subject": msg.get("subject", ""),
+                            "text": msg.get("text", ""),
+                            "rich_text": msg.get("richText", ""),
+                            "status": msg.get("status", {}).get("statusType", ""),
+                            "direction": msg.get("direction", ""),
+                            "channel_id": msg.get("channelId", ""),
+                            "channel_account_id": msg.get("channelAccountId", "")
+                        }
+                        
+                        formatted_thread["messages"].append(formatted_message)
+                    
+                    formatted_threads.append(formatted_thread)
+                    
+                except Exception as e:
+                    logger.error(f"Error fetching messages for thread {thread_id}: {str(e)}")
+            
+            # Convert datetime fields
+            converted_threads = convert_datetime_fields(formatted_threads)
+            
+            # Get pagination token for the next page
+            next_after = threads_data.get("paging", {}).get("next", {}).get("after")
+            
+            return {
+                "results": converted_threads,
                 "pagination": {
                     "next": {"after": next_after}
                 }
