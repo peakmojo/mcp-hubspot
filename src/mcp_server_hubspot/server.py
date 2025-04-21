@@ -15,8 +15,10 @@ from sentence_transformers import SentenceTransformer
 from .hubspot_client import HubSpotClient, ApiException
 # Import FAISS manager
 from .faiss_manager import FaissManager
+# Import LevelDB manager
+from .leveldb_manager import LevelDBManager
 # Import utility functions
-from .utils import store_in_faiss, search_in_faiss
+from .utils import store_in_faiss, store_in_leveldb, search_in_faiss, get_from_leveldb, refresh_data
 
 logger = logging.getLogger('mcp_hubspot_server')
 
@@ -24,7 +26,7 @@ async def main(access_token: Optional[str] = None):
     """Run the HubSpot MCP server."""
     logger.info("Server starting")
     
-    # Initialize FAISS manager
+    # Initialize storage managers
     storage_dir = os.getenv("HUBSPOT_STORAGE_DIR", "/storage")
     logger.info(f"Using storage directory: {storage_dir}")
     
@@ -50,6 +52,10 @@ async def main(access_token: Optional[str] = None):
     )
     logger.info(f"FAISS manager initialized with dimension {embedding_dim}")
     
+    # Create LevelDB manager
+    leveldb_manager = LevelDBManager(storage_dir=storage_dir)
+    logger.info("LevelDB manager initialized")
+    
     # Initialize HubSpot client
     hubspot = HubSpotClient(access_token)
     server = Server("hubspot-manager")
@@ -66,9 +72,21 @@ async def main(access_token: Optional[str] = None):
         path = str(uri).replace("hubspot://", "")
         return ""
 
+    def get_last_updated_description(data_type: str) -> str:
+        """Get a description with last updated timestamp for a data type."""
+        timestamp = leveldb_manager.get_last_updated(data_type)
+        if timestamp:
+            return f"Last updated: {timestamp}"
+        return "Not yet updated"
+
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
         """List available tools"""
+        # Get last updated timestamps for each data type
+        company_timestamp = get_last_updated_description("company")
+        contact_timestamp = get_last_updated_description("contact")
+        conversation_timestamp = get_last_updated_description("conversation_thread")
+        
         return [
             types.Tool(
                 name="hubspot_create_contact",
@@ -109,7 +127,7 @@ async def main(access_token: Optional[str] = None):
             ),
             types.Tool(
                 name="hubspot_get_active_companies",
-                description="Get most recently active companies from HubSpot",
+                description=f"Get most recently active companies from local storage. {company_timestamp}",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -119,7 +137,7 @@ async def main(access_token: Optional[str] = None):
             ),
             types.Tool(
                 name="hubspot_get_active_contacts",
-                description="Get most recently active contacts from HubSpot",
+                description=f"Get most recently active contacts from local storage. {contact_timestamp}",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -127,7 +145,6 @@ async def main(access_token: Optional[str] = None):
                     },
                 },
             ),
-            # Add new FAISS search tool
             types.Tool(
                 name="hubspot_search_data",
                 description="Search for similar data in stored HubSpot API responses",
@@ -142,14 +159,25 @@ async def main(access_token: Optional[str] = None):
             ),
             types.Tool(
                 name="hubspot_get_recent_conversations",
-                description="Get recent conversation threads from HubSpot with their messages",
+                description=f"Get recent conversation threads from local storage. {conversation_timestamp}",
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "limit": {"type": "integer", "description": "Maximum number of threads to return (default: 10)"},
-                        "after": {"type": "string", "description": "Pagination token"},
-                        "refresh_cache": {"type": "boolean", "description": "Whether to refresh the threads cache (default: false)"}
+                        "after": {"type": "string", "description": "Pagination token"}
                     },
+                },
+            ),
+            types.Tool(
+                name="hubspot_refresh_data",
+                description="Refresh data from HubSpot API and store in local database",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "data_type": {"type": "string", "description": "Type of data to refresh (company, contact, conversation_thread)"},
+                        "limit": {"type": "integer", "description": "Maximum number of items to fetch (default: 100)"}
+                    },
+                    "required": ["data_type"]
                 },
             ),
         ]
@@ -234,7 +262,14 @@ async def main(access_token: Optional[str] = None):
                     api_response = hubspot.client.crm.contacts.basic_api.create(
                         simple_public_object_input_for_create=simple_public_object_input
                     )
-                    return [types.TextContent(type="text", text=str(api_response.to_dict()))]
+                    
+                    # Get the created contact and store it in LevelDB and FAISS
+                    contact_data = api_response.to_dict()
+                    store_in_leveldb(leveldb_manager, [contact_data], "contact")
+                    store_in_faiss(faiss_manager, [contact_data], "contact", embedding_model, None)
+                    faiss_manager.save_today_index()
+                    
+                    return [types.TextContent(type="text", text=str(contact_data))]
                     
                 except ApiException as e:
                     return [types.TextContent(type="text", text=f"HubSpot API error: {str(e)}")]
@@ -291,7 +326,14 @@ async def main(access_token: Optional[str] = None):
                     api_response = hubspot.client.crm.companies.basic_api.create(
                         simple_public_object_input_for_create=simple_public_object_input
                     )
-                    return [types.TextContent(type="text", text=str(api_response.to_dict()))]
+                    
+                    # Get the created company and store it in LevelDB and FAISS
+                    company_data = api_response.to_dict()
+                    store_in_leveldb(leveldb_manager, [company_data], "company")
+                    store_in_faiss(faiss_manager, [company_data], "company", embedding_model, None)
+                    faiss_manager.save_today_index()
+                    
+                    return [types.TextContent(type="text", text=str(company_data))]
                     
                 except ApiException as e:
                     return [types.TextContent(type="text", text=f"HubSpot API error: {str(e)}")]
@@ -301,25 +343,28 @@ async def main(access_token: Optional[str] = None):
                     raise ValueError("Missing arguments for get_company_activity")
                 results = hubspot.get_company_activity(arguments["company_id"])
                 
-                # Store in FAISS for future reference
+                # Store in both LevelDB and FAISS for future reference
                 try:
                     data = json.loads(results)
                     metadata_extras = {"company_id": arguments["company_id"]}
-                    logger.debug(f"Preparing to store {len(data) if isinstance(data, list) else 'single'} company_activity data item(s) in FAISS")
-                    logger.debug(f"Metadata extras: {metadata_extras}")
+                    logger.debug(f"Preparing to store {len(data) if isinstance(data, list) else 'single'} company_activity data item(s)")
+                    
+                    # Store in LevelDB
+                    store_in_leveldb(leveldb_manager, data if isinstance(data, list) else [data], "company_activity")
+                    
+                    # Store in FAISS
                     store_in_faiss(
                         faiss_manager=faiss_manager,
-                        data=data,
+                        data=data if isinstance(data, list) else [data],
                         data_type="company_activity",
                         model=embedding_model,
                         metadata_extras=metadata_extras
                     )
+                    
                     # Save indexes after successful storage
-                    logger.debug("FAISS storage completed, now saving today's index")
                     faiss_manager.save_today_index()
-                    logger.debug("Index saving completed")
                 except Exception as e:
-                    logger.error(f"Error storing in FAISS: {str(e)}", exc_info=True)
+                    logger.error(f"Error storing company activity: {str(e)}", exc_info=True)
                 
                 return [types.TextContent(type="text", text=results)]
                 
@@ -327,56 +372,32 @@ async def main(access_token: Optional[str] = None):
                 # Extract parameters with defaults if not provided
                 limit = arguments.get("limit", 10) if arguments else 10
                 after = arguments.get("after") if arguments else None
-                refresh_cache = arguments.get("refresh_cache", False) if arguments else False
                 
                 # Ensure limit is an integer
                 limit = int(limit) if limit is not None else 10
                 
-                # Get recent conversations with pagination
-                logger.debug(f"Getting recent conversations with limit={limit}, after={after}, refresh_cache={refresh_cache}")
-                results = hubspot.get_recent_conversations(limit=limit, after=after, refresh_cache=refresh_cache)
+                # Get conversations from LevelDB
+                logger.debug(f"Getting recent conversations from LevelDB with limit={limit}, after={after}")
+                conversations = get_from_leveldb(leveldb_manager, "conversation_thread", limit)
                 
-                # Store in FAISS for future reference
-                try:
-                    data = results.get("results", [])
-                    if data:
-                        # Store each thread individually in FAISS
-                        logger.debug(f"Preparing to store {len(data)} conversation threads in FAISS individually")
-                        for i, thread in enumerate(data):
-                            thread_metadata = {
-                                "thread_id": thread.get("id", f"unknown_{i}"),
-                                "limit": limit,
-                                "after": after
-                            }
-                            logger.debug(f"Storing thread {i+1}/{len(data)} with ID {thread_metadata['thread_id']}")
-                            
-                            # Store single thread as a list with one item to maintain format compatibility
-                            store_in_faiss(
-                                faiss_manager=faiss_manager,
-                                data=[thread],  # Store as single-item list
-                                data_type="conversation_thread",
-                                model=embedding_model,
-                                metadata_extras=thread_metadata
-                            )
-                        
-                        # Save indexes after successful storage
-                        logger.debug(f"All {len(data)} threads stored in FAISS, now saving today's index")
-                        faiss_manager.save_today_index()
-                        logger.debug("Index saving completed")
-                except Exception as e:
-                    logger.error(f"Error storing conversations in FAISS: {str(e)}", exc_info=True)
+                # Format response with pagination
+                response = {
+                    "results": conversations,
+                    "pagination": {
+                        "next": {"after": None}  # We're not implementing pagination in the local storage yet
+                    }
+                }
                 
-                # Truncate message text for API response (while preserving full text in FAISS)
-                truncated_results = results.copy()
-                for thread in truncated_results.get("results", []):
+                # Truncate message text for API response (while preserving full text in storage)
+                for thread in response.get("results", []):
                     for message in thread.get("messages", []):
                         if "text" in message:
                             message["text"] = message["text"][:200] if message["text"] else ""
                         if "rich_text" in message:
                             message["rich_text"] = message["rich_text"][:200] if message["rich_text"] else ""
                 
-                # Return truncated results as JSON
-                return [types.TextContent(type="text", text=json.dumps(truncated_results))]
+                # Return results as JSON
+                return [types.TextContent(type="text", text=json.dumps(response))]
 
             elif name == "hubspot_get_active_companies":
                 # Extract parameters with defaults if not provided
@@ -385,30 +406,11 @@ async def main(access_token: Optional[str] = None):
                 # Ensure limit is an integer
                 limit = int(limit) if limit is not None else 10
                 
-                # Get recent companies
-                results = hubspot.get_recent_companies(limit=limit)
+                # Get companies from LevelDB
+                companies = get_from_leveldb(leveldb_manager, "company", limit)
                 
-                # Store in FAISS for future reference
-                try:
-                    data = json.loads(results)
-                    metadata_extras = {"limit": limit}
-                    logger.debug(f"Preparing to store {len(data) if isinstance(data, list) else 'single'} company data item(s) in FAISS")
-                    logger.debug(f"Metadata extras: {metadata_extras}")
-                    store_in_faiss(
-                        faiss_manager=faiss_manager,
-                        data=data,
-                        data_type="company",
-                        model=embedding_model,
-                        metadata_extras=metadata_extras
-                    )
-                    # Save indexes after successful storage
-                    logger.debug("FAISS storage completed, now saving today's index")
-                    faiss_manager.save_today_index()
-                    logger.debug("Index saving completed")
-                except Exception as e:
-                    logger.error(f"Error storing in FAISS: {str(e)}", exc_info=True)
-                
-                return [types.TextContent(type="text", text=results)]
+                # Return as JSON
+                return [types.TextContent(type="text", text=json.dumps(companies))]
 
             elif name == "hubspot_get_active_contacts":
                 # Extract parameters with defaults if not provided
@@ -417,30 +419,11 @@ async def main(access_token: Optional[str] = None):
                 # Ensure limit is an integer
                 limit = int(limit) if limit is not None else 10
                 
-                # Get recent contacts
-                results = hubspot.get_recent_contacts(limit=limit)
+                # Get contacts from LevelDB
+                contacts = get_from_leveldb(leveldb_manager, "contact", limit)
                 
-                # Store in FAISS for future reference
-                try:
-                    data = json.loads(results)
-                    metadata_extras = {"limit": limit}
-                    logger.debug(f"Preparing to store {len(data) if isinstance(data, list) else 'single'} contact data item(s) in FAISS")
-                    logger.debug(f"Metadata extras: {metadata_extras}")
-                    store_in_faiss(
-                        faiss_manager=faiss_manager,
-                        data=data,
-                        data_type="contact",
-                        model=embedding_model,
-                        metadata_extras=metadata_extras
-                    )
-                    # Save indexes after successful storage
-                    logger.debug("FAISS storage completed, now saving today's index")
-                    faiss_manager.save_today_index()
-                    logger.debug("Index saving completed")
-                except Exception as e:
-                    logger.error(f"Error storing in FAISS: {str(e)}", exc_info=True)
-                
-                return [types.TextContent(type="text", text=results)]
+                # Return as JSON
+                return [types.TextContent(type="text", text=json.dumps(contacts))]
                 
             elif name == "hubspot_search_data":
                 # Extract parameters
@@ -463,6 +446,31 @@ async def main(access_token: Optional[str] = None):
                 except Exception as e:
                     logger.error(f"Error searching in FAISS: {str(e)}")
                     return [types.TextContent(type="text", text=f"Error searching data: {str(e)}")]
+                    
+            elif name == "hubspot_refresh_data":
+                # Extract parameters
+                if not arguments or "data_type" not in arguments:
+                    raise ValueError("Missing data_type parameter for refresh")
+                
+                data_type = arguments["data_type"]
+                limit = arguments.get("limit", 100)
+                limit = int(limit) if limit is not None else 100
+                
+                try:
+                    # Call the refresh function
+                    result = refresh_data(
+                        hubspot_client=hubspot,
+                        data_type=data_type,
+                        faiss_manager=faiss_manager,
+                        leveldb_manager=leveldb_manager,
+                        model=embedding_model,
+                        limit=limit
+                    )
+                    
+                    return [types.TextContent(type="text", text=json.dumps(result))]
+                except Exception as e:
+                    logger.error(f"Error refreshing {data_type} data: {str(e)}", exc_info=True)
+                    return [types.TextContent(type="text", text=f"Error refreshing {data_type} data: {str(e)}")]
 
             else:
                 raise ValueError(f"Unknown tool: {name}")
@@ -472,9 +480,10 @@ async def main(access_token: Optional[str] = None):
         except Exception as e:
             return [types.TextContent(type="text", text=f"Error: {str(e)}")]
 
-    # Register shutdown handler to save indexes
+    # Register shutdown handlers
     import atexit
     atexit.register(faiss_manager.save_today_index)
+    atexit.register(leveldb_manager.close)
 
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         logger.info("Server running with stdio transport")
@@ -497,8 +506,20 @@ if __name__ == "__main__":
     
     # Set up command line argument parser
     parser = argparse.ArgumentParser(description="Run the HubSpot MCP server")
-    parser.add_argument("--access-token", 
-                        help="HubSpot API access token (overrides HUBSPOT_ACCESS_TOKEN environment variable)")
+    parser.add_argument("--access-token", help="HubSpot API access token")
     
+    # Parse arguments
     args = parser.parse_args()
-    asyncio.run(main(access_token=args.access_token)) 
+    
+    # Load environment variables
+    load_dotenv()
+    
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    
+    # Run the server
+    access_token = args.access_token or os.getenv("HUBSPOT_ACCESS_TOKEN")
+    asyncio.run(main(access_token)) 

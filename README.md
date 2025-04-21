@@ -13,6 +13,7 @@ Our implementation prioritizes the most frequently used, high-value HubSpot oper
 - **Direct CRM Access**: Connect Claude and other AI assistants to your HubSpot data without intermediary steps
 - **Context Retention**: Vector storage with FAISS enables semantic search across previous interactions
 - **Zero Configuration**: Simple Docker deployment with minimal setup
+- **Efficient Storage**: Dual-database architecture with LevelDB for key-value storage and FAISS for vector search
 
 ## Example Prompts
 
@@ -25,6 +26,10 @@ Create HubSpot contacts and companies from this LinkedIn profile:
 What's happening lately with my pipeline?
 ```
 
+```
+Refresh my company data from HubSpot.
+```
+
 ## Available Tools
 
 The server offers tools for HubSpot management and data retrieval:
@@ -34,18 +39,43 @@ The server offers tools for HubSpot management and data retrieval:
 | `hubspot_create_contact` | Create contacts with duplicate prevention |
 | `hubspot_create_company` | Create companies with duplicate prevention |
 | `hubspot_get_company_activity` | Retrieve activity for specific companies |
-| `hubspot_get_active_companies` | Retrieve most recently active companies |
-| `hubspot_get_active_contacts` | Retrieve most recently active contacts |
-| `hubspot_get_recent_conversations` | Retrieve recent conversation threads with messages |
+| `hubspot_get_active_companies` | Retrieve most recently active companies from local storage |
+| `hubspot_get_active_contacts` | Retrieve most recently active contacts from local storage |
+| `hubspot_get_recent_conversations` | Retrieve recent conversation threads from local storage |
 | `hubspot_search_data` | Semantic search across previously retrieved HubSpot data |
+| `hubspot_refresh_data` | Refresh data from HubSpot API and store in local databases |
 
 ## Performance Features
 
-- **Vector Storage**: Utilizes FAISS for efficient semantic search and retrieval
+- **Dual Database Architecture**: 
+  - LevelDB for efficient key-value storage using `{object_type}_{object_id}` as keys
+  - FAISS for semantic vector search capabilities
+- **Timestamped Data**: All tools display when data was last refreshed
+- **Manual Refresh Control**: Refresh data on-demand to minimize API usage
 - **Thread-Level Indexing**: Stores each conversation thread individually for precise retrieval
 - **Embedding Caching**: Uses SentenceTransformer with automatic caching
 - **Persistent Storage**: Data persists between sessions in configurable storage directory
 - **Multi-platform Support**: Optimized Docker images for various architectures
+
+## Storage Architecture
+
+The server implements a dual-database architecture for optimal performance:
+
+1. **LevelDB**: Fast key-value storage using `{object_type}_{object_id}` as keys
+   - Provides direct record lookup by ID
+   - Supports efficient prefix queries for all objects of a type
+   - Stores timestamps for data freshness tracking
+
+2. **FAISS**: Vector database for semantic search
+   - Enables natural language querying across all stored data
+   - Indexes data by encoding it into dense vector representations
+   - Stores metadata alongside vectors for contextual retrieval
+
+This architecture allows the server to:
+- Reduce API calls to HubSpot by using cached data
+- Provide fast direct lookups for known records
+- Support semantic search for exploratory queries
+- Track data freshness with timestamps in tool descriptions
 
 ## Setup
 
