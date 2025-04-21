@@ -108,17 +108,6 @@ async def main(access_token: Optional[str] = None):
                 },
             ),
             types.Tool(
-                name="hubspot_get_recent_engagements",
-                description="Get recent engagement activities across all contacts and companies",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "days": {"type": "integer", "description": "Number of days to look back (default: 7)"},
-                        "limit": {"type": "integer", "description": "Maximum number of engagements to return (default: 50)"}
-                    },
-                },
-            ),
-            types.Tool(
                 name="hubspot_get_active_companies",
                 description="Get most recently active companies from HubSpot",
                 inputSchema={
@@ -333,40 +322,6 @@ async def main(access_token: Optional[str] = None):
                 
                 return [types.TextContent(type="text", text=results)]
                 
-            elif name == "hubspot_get_recent_engagements":
-                # Extract parameters with defaults if not provided
-                days = arguments.get("days", 7) if arguments else 7
-                limit = arguments.get("limit", 50) if arguments else 50
-                
-                # Ensure days and limit are integers
-                days = int(days) if days is not None else 7
-                limit = int(limit) if limit is not None else 50
-                
-                # Get recent engagements
-                results = hubspot.get_recent_engagements(days=days, limit=limit)
-                
-                # Store in FAISS for future reference
-                try:
-                    data = json.loads(results)
-                    metadata_extras = {"days": days, "limit": limit}
-                    logger.debug(f"Preparing to store {len(data) if isinstance(data, list) else 'single'} engagement data item(s) in FAISS")
-                    logger.debug(f"Metadata extras: {metadata_extras}")
-                    store_in_faiss(
-                        faiss_manager=faiss_manager,
-                        data=data,
-                        data_type="engagement",
-                        model=embedding_model,
-                        metadata_extras=metadata_extras
-                    )
-                    # Save indexes after successful storage
-                    logger.debug("FAISS storage completed, now saving today's index")
-                    faiss_manager.save_today_index()
-                    logger.debug("Index saving completed")
-                except Exception as e:
-                    logger.error(f"Error storing in FAISS: {str(e)}", exc_info=True)
-                
-                return [types.TextContent(type="text", text=results)]
-            
             elif name == "hubspot_get_recent_emails":
                 # Extract parameters with defaults if not provided
                 limit = arguments.get("limit", 10) if arguments else 10
