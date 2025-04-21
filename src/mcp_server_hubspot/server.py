@@ -340,18 +340,27 @@ async def main(access_token: Optional[str] = None):
                 try:
                     data = results.get("results", [])
                     if data:
-                        metadata_extras = {"limit": limit, "after": after}
-                        logger.debug(f"Preparing to store {len(data)} conversation data items in FAISS")
-                        logger.debug(f"Metadata extras: {metadata_extras}")
-                        store_in_faiss(
-                            faiss_manager=faiss_manager,
-                            data=data,
-                            data_type="conversation",
-                            model=embedding_model,
-                            metadata_extras=metadata_extras
-                        )
+                        # Store each thread individually in FAISS
+                        logger.debug(f"Preparing to store {len(data)} conversation threads in FAISS individually")
+                        for i, thread in enumerate(data):
+                            thread_metadata = {
+                                "thread_id": thread.get("id", f"unknown_{i}"),
+                                "limit": limit,
+                                "after": after
+                            }
+                            logger.debug(f"Storing thread {i+1}/{len(data)} with ID {thread_metadata['thread_id']}")
+                            
+                            # Store single thread as a list with one item to maintain format compatibility
+                            store_in_faiss(
+                                faiss_manager=faiss_manager,
+                                data=[thread],  # Store as single-item list
+                                data_type="conversation_thread",
+                                model=embedding_model,
+                                metadata_extras=thread_metadata
+                            )
+                        
                         # Save indexes after successful storage
-                        logger.debug("FAISS storage completed, now saving today's index")
+                        logger.debug(f"All {len(data)} threads stored in FAISS, now saving today's index")
                         faiss_manager.save_today_index()
                         logger.debug("Index saving completed")
                 except Exception as e:

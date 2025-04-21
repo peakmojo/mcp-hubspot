@@ -1,6 +1,7 @@
 import logging
 import os
 import json
+import requests
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from dateutil.tz import tzlocal
@@ -362,15 +363,18 @@ class HubSpotClient:
                 # Get a page of threads
                 logger.debug(f"Fetching {limit} threads with after={after}")
                 url = "https://api.hubapi.com/conversations/v3/conversations/threads"
-                params = {"limit": limit}
+                
+                params = {"limit": limit, "sort": "-id"}
                 if after:
                     params["after"] = after
                 
-                threads_response = self.client.api_request({
-                    "method": "GET",
-                    "path": "/conversations/v3/conversations/threads",
-                    "params": params
-                }).json()
+                headers = {
+                    'accept': "application/json",
+                    'authorization': f"Bearer {self.client.access_token}"
+                }
+                
+                response = requests.request("GET", url, headers=headers, params=params)
+                threads_response = response.json()
                 
                 # Save or update threads cache
                 if not after:  # Only replace full cache when getting first page
@@ -402,13 +406,14 @@ class HubSpotClient:
                 # Get the last 2 messages for this thread
                 try:
                     url = f"https://api.hubapi.com/conversations/v3/conversations/threads/{thread_id}/messages"
-                    params = {"limit": 2}  # Get the last 2 messages
+                    params = {}  
                     
-                    messages_response = self.client.api_request({
-                        "method": "GET",
-                        "path": f"/conversations/v3/conversations/threads/{thread_id}/messages",
-                        "params": params
-                    }).json()
+                    headers = {
+                        'accept': "application/json",
+                        'authorization': f"Bearer {self.client.access_token}"
+                    }
+                    
+                    messages_response = requests.request("GET", url, headers=headers, params=params).json()
                     
                     # Format thread with its messages
                     message_results = messages_response.get("results", [])
