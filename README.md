@@ -34,14 +34,15 @@ The server offers tools for HubSpot management and data retrieval:
 | `hubspot_create_contact` | Create contacts with duplicate prevention |
 | `hubspot_create_company` | Create companies with duplicate prevention |
 | `hubspot_get_company_activity` | Retrieve activity for specific companies |
-| `hubspot_get_recent_engagements` | Get recent engagement data across contacts/companies |
 | `hubspot_get_active_companies` | Retrieve most recently active companies |
 | `hubspot_get_active_contacts` | Retrieve most recently active contacts |
+| `hubspot_get_recent_conversations` | Retrieve recent conversation threads with messages |
 | `hubspot_search_data` | Semantic search across previously retrieved HubSpot data |
 
 ## Performance Features
 
 - **Vector Storage**: Utilizes FAISS for efficient semantic search and retrieval
+- **Thread-Level Indexing**: Stores each conversation thread individually for precise retrieval
 - **Embedding Caching**: Uses SentenceTransformer with automatic caching
 - **Persistent Storage**: Data persists between sessions in configurable storage directory
 - **Multi-platform Support**: Optimized Docker images for various architectures
