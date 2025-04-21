@@ -151,6 +151,17 @@ async def main(access_token: Optional[str] = None):
                     "required": ["query"]
                 },
             ),
+            types.Tool(
+                name="hubspot_get_recent_emails",
+                description="Get recent emails from HubSpot",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "description": "Maximum number of emails to return (default: 10)"},
+                        "after": {"type": "string", "description": "Pagination token"}
+                    },
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -355,6 +366,42 @@ async def main(access_token: Optional[str] = None):
                     logger.error(f"Error storing in FAISS: {str(e)}", exc_info=True)
                 
                 return [types.TextContent(type="text", text=results)]
+            
+            elif name == "hubspot_get_recent_emails":
+                # Extract parameters with defaults if not provided
+                limit = arguments.get("limit", 10) if arguments else 10
+                after = arguments.get("after") if arguments else None
+                
+                # Ensure limit is an integer
+                limit = int(limit) if limit is not None else 10
+                
+                # Get recent emails with pagination
+                logger.debug(f"Getting recent emails with limit={limit}, after={after}")
+                results = hubspot.get_recent_emails(limit=limit, after=after)
+                
+                # Store in FAISS for future reference
+                try:
+                    data = results.get("results", [])
+                    if data:
+                        metadata_extras = {"limit": limit, "after": after}
+                        logger.debug(f"Preparing to store {len(data)} email data items in FAISS")
+                        logger.debug(f"Metadata extras: {metadata_extras}")
+                        store_in_faiss(
+                            faiss_manager=faiss_manager,
+                            data=data,
+                            data_type="email",
+                            model=embedding_model,
+                            metadata_extras=metadata_extras
+                        )
+                        # Save indexes after successful storage
+                        logger.debug("FAISS storage completed, now saving today's index")
+                        faiss_manager.save_today_index()
+                        logger.debug("Index saving completed")
+                except Exception as e:
+                    logger.error(f"Error storing emails in FAISS: {str(e)}", exc_info=True)
+                
+                # Return results as JSON
+                return [types.TextContent(type="text", text=json.dumps(results))]
 
             elif name == "hubspot_get_active_companies":
                 # Extract parameters with defaults if not provided
