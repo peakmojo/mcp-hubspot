@@ -62,11 +62,15 @@ class HubSpotClient:
         except Exception as e:
             logger.error(f"Error saving threads cache: {str(e)}")
 
-    def get_recent_companies(self, limit: int = 10) -> str:
-        """Get most recently active companies from HubSpot
+    def get_recent_companies(self, limit: int = 10, after: Optional[str] = None) -> Dict[str, Any]:
+        """Get most recently active companies from HubSpot with pagination
         
         Args:
-            limit: Maximum number of companies to return (default: 10)
+            limit: Maximum number of companies to return per page (default: 10)
+            after: Pagination token for fetching the next page (default: None)
+            
+        Returns:
+            Dictionary containing companies and pagination token
         """
         try:
             from hubspot.crm.companies import PublicObjectSearchRequest
@@ -78,7 +82,8 @@ class HubSpotClient:
                     "direction": "DESCENDING"
                 }],
                 limit=limit,
-                properties=["name", "domain", "website", "phone", "industry", "hs_lastmodifieddate"]
+                properties=["name", "domain", "website", "phone", "industry", "hs_lastmodifieddate"],
+                after=after
             )
             
             # Execute the search
@@ -89,20 +94,35 @@ class HubSpotClient:
             # Convert the response to a dictionary
             companies_dict = [company.to_dict() for company in search_response.results]
             converted_companies = convert_datetime_fields(companies_dict)
-            return json.dumps(converted_companies)
+            
+            # Get pagination token for the next page
+            next_after = None
+            if hasattr(search_response, 'paging') and hasattr(search_response.paging, 'next'):
+                next_after = search_response.paging.next.after
+            
+            return {
+                "results": converted_companies,
+                "pagination": {
+                    "next": {"after": next_after}
+                }
+            }
             
         except ApiException as e:
             logger.error(f"API Exception: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return {"error": str(e), "results": [], "pagination": {"next": {"after": None}}}
         except Exception as e:
             logger.error(f"Exception: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return {"error": str(e), "results": [], "pagination": {"next": {"after": None}}}
 
-    def get_recent_contacts(self, limit: int = 10) -> str:
-        """Get most recently active contacts from HubSpot
+    def get_recent_contacts(self, limit: int = 10, after: Optional[str] = None) -> Dict[str, Any]:
+        """Get most recently active contacts from HubSpot with pagination
         
         Args:
-            limit: Maximum number of contacts to return (default: 10)
+            limit: Maximum number of contacts to return per page (default: 10)
+            after: Pagination token for fetching the next page (default: None)
+            
+        Returns:
+            Dictionary containing contacts and pagination token
         """
         try:
             from hubspot.crm.contacts import PublicObjectSearchRequest
@@ -114,7 +134,8 @@ class HubSpotClient:
                     "direction": "DESCENDING"
                 }],
                 limit=limit,
-                properties=["firstname", "lastname", "email", "phone", "company", "hs_lastmodifieddate", "lastmodifieddate"]
+                properties=["firstname", "lastname", "email", "phone", "company", "hs_lastmodifieddate", "lastmodifieddate"],
+                after=after
             )
             
             # Execute the search
@@ -125,14 +146,25 @@ class HubSpotClient:
             # Convert the response to a dictionary
             contacts_dict = [contact.to_dict() for contact in search_response.results]
             converted_contacts = convert_datetime_fields(contacts_dict)
-            return json.dumps(converted_contacts)
+            
+            # Get pagination token for the next page
+            next_after = None
+            if hasattr(search_response, 'paging') and hasattr(search_response.paging, 'next'):
+                next_after = search_response.paging.next.after
+            
+            return {
+                "results": converted_contacts,
+                "pagination": {
+                    "next": {"after": next_after}
+                }
+            }
             
         except ApiException as e:
             logger.error(f"API Exception: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return {"error": str(e), "results": [], "pagination": {"next": {"after": None}}}
         except Exception as e:
             logger.error(f"Exception: {str(e)}")
-            return json.dumps({"error": str(e)})
+            return {"error": str(e), "results": [], "pagination": {"next": {"after": None}}}
 
     def get_company_activity(self, company_id: str) -> str:
         """Get activity history for a specific company"""
@@ -247,101 +279,6 @@ class HubSpotClient:
             logger.error(f"Exception: {str(e)}")
             return json.dumps({"error": str(e)})
 
-    def get_recent_emails(self, limit: int = 10, after: Optional[str] = None) -> Dict[str, Any]:
-        """Get recent emails from HubSpot with pagination
-        
-        Args:
-            limit: Maximum number of emails to return per page (default: 10)
-            after: Pagination token from a previous call (default: None)
-            
-        Returns:
-            Dictionary containing email data and pagination token
-        """
-        try:
-            # Get a page of emails
-            logger.debug(f"Fetching {limit} emails with after={after}")
-            api_response = self.client.crm.objects.emails.basic_api.get_page(
-                limit=limit, 
-                archived=False,
-                after=after
-            )
-            
-            # Extract email IDs to fetch their bodies in batch
-            email_ids = [email.id for email in api_response.results]
-            logger.debug(f"Found {len(email_ids)} email IDs")
-            
-            if not email_ids:
-                logger.info("No emails found")
-                return {
-                    "results": [],
-                    "pagination": {
-                        "next": {"after": api_response.paging.next.after if hasattr(api_response, 'paging') and hasattr(api_response.paging, 'next') else None}
-                    }
-                }
-            
-            # Get detailed body content for each email
-            formatted_emails = []
-            
-            # Process emails in batches of 10 (HubSpot API limit for batch operations)
-            batch_size = 10
-            for i in range(0, len(email_ids), batch_size):
-                batch_ids = email_ids[i:i+batch_size]
-                logger.debug(f"Processing batch of {len(batch_ids)} emails")
-                
-                try:
-                    # Make batch API request for email details
-                    from hubspot.crm.objects.emails import BatchReadInputSimplePublicObjectId, SimplePublicObjectId
-                    
-                    batch_input = BatchReadInputSimplePublicObjectId(
-                        inputs=[SimplePublicObjectId(id=email_id) for email_id in batch_ids],
-                        properties=["subject", "hs_email_text", "hs_email_html", "hs_email_from", "hs_email_to", "hs_email_cc", "hs_email_bcc", "createdAt", "updatedAt"]
-                    )
-                    
-                    batch_response = self.client.crm.objects.emails.batch_api.read(
-                        batch_read_input_simple_public_object_id=batch_input
-                    )
-                    
-                    # Format each email response
-                    for email in batch_response.results:
-                        email_dict = email.to_dict()
-                        properties = email_dict.get("properties", {})
-                        
-                        formatted_email = {
-                            "id": email_dict.get("id"),
-                            "created_at": properties.get("createdAt"),
-                            "updated_at": properties.get("updatedAt"),
-                            "subject": properties.get("subject", ""),
-                            "from": properties.get("hs_email_from", ""),
-                            "to": properties.get("hs_email_to", ""),
-                            "cc": properties.get("hs_email_cc", ""),
-                            "bcc": properties.get("hs_email_bcc", ""),
-                            "body": properties.get("hs_email_text", "") or properties.get("hs_email_html", "")
-                        }
-                        
-                        formatted_emails.append(formatted_email)
-                        
-                except ApiException as e:
-                    logger.error(f"Batch API Exception: {str(e)}")
-                    
-            # Convert datetime fields
-            converted_emails = convert_datetime_fields(formatted_emails)
-            
-            # Get pagination token for the next page
-            next_after = api_response.paging.next.after if hasattr(api_response, 'paging') and hasattr(api_response.paging, 'next') else None
-            
-            return {
-                "results": converted_emails,
-                "pagination": {
-                    "next": {"after": next_after}
-                }
-            }
-            
-        except ApiException as e:
-            logger.error(f"API Exception: {str(e)}")
-            return {"error": str(e), "results": [], "pagination": {"next": {"after": None}}}
-        except Exception as e:
-            logger.error(f"Exception: {str(e)}")
-            return {"error": str(e), "results": [], "pagination": {"next": {"after": None}}}
 
     def get_recent_conversations(self, limit: int = 10, after: Optional[str] = None, refresh_cache: bool = False) -> Dict[str, Any]:
         """Get recent conversation threads from HubSpot with pagination

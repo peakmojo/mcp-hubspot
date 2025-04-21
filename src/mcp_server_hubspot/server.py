@@ -131,7 +131,8 @@ async def main(access_token: Optional[str] = None):
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "limit": {"type": "integer", "description": "Maximum number of companies to return (default: 10)"}
+                        "limit": {"type": "integer", "description": "Maximum number of companies to return (default: 10)"},
+                        "after": {"type": "string", "description": "Pagination token for fetching next page of results"}
                     },
                 },
             ),
@@ -141,7 +142,8 @@ async def main(access_token: Optional[str] = None):
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "limit": {"type": "integer", "description": "Maximum number of contacts to return (default: 10)"}
+                        "limit": {"type": "integer", "description": "Maximum number of contacts to return (default: 10)"},
+                        "after": {"type": "string", "description": "Pagination token for fetching next page of results"}
                     },
                 },
             ),
@@ -175,7 +177,9 @@ async def main(access_token: Optional[str] = None):
                     "type": "object",
                     "properties": {
                         "data_type": {"type": "string", "description": "Type of data to refresh (company, contact, conversation_thread)"},
-                        "limit": {"type": "integer", "description": "Maximum number of items to fetch (default: 100)"}
+                        "limit": {"type": "integer", "description": "Maximum number of items to fetch per page (default: 100)"},
+                        "after": {"type": "string", "description": "Pagination token for fetching the next page of results"},
+                        "store_all_pages": {"type": "boolean", "description": "Whether to fetch all available pages (warning: may exceed API limits)"}
                     },
                     "required": ["data_type"]
                 },
@@ -402,6 +406,7 @@ async def main(access_token: Optional[str] = None):
             elif name == "hubspot_get_active_companies":
                 # Extract parameters with defaults if not provided
                 limit = arguments.get("limit", 10) if arguments else 10
+                after = arguments.get("after") if arguments else None
                 
                 # Ensure limit is an integer
                 limit = int(limit) if limit is not None else 10
@@ -409,12 +414,21 @@ async def main(access_token: Optional[str] = None):
                 # Get companies from LevelDB
                 companies = get_from_leveldb(leveldb_manager, "company", limit)
                 
+                # Format response with pagination (simple implementation for now)
+                response = {
+                    "results": companies,
+                    "pagination": {
+                        "next": {"after": None}  # We're not implementing complex pagination in local storage yet
+                    }
+                }
+                
                 # Return as JSON
-                return [types.TextContent(type="text", text=json.dumps(companies))]
+                return [types.TextContent(type="text", text=json.dumps(response))]
 
             elif name == "hubspot_get_active_contacts":
                 # Extract parameters with defaults if not provided
                 limit = arguments.get("limit", 10) if arguments else 10
+                after = arguments.get("after") if arguments else None
                 
                 # Ensure limit is an integer
                 limit = int(limit) if limit is not None else 10
@@ -422,8 +436,16 @@ async def main(access_token: Optional[str] = None):
                 # Get contacts from LevelDB
                 contacts = get_from_leveldb(leveldb_manager, "contact", limit)
                 
+                # Format response with pagination (simple implementation for now)
+                response = {
+                    "results": contacts,
+                    "pagination": {
+                        "next": {"after": None}  # We're not implementing complex pagination in local storage yet
+                    }
+                }
+                
                 # Return as JSON
-                return [types.TextContent(type="text", text=json.dumps(contacts))]
+                return [types.TextContent(type="text", text=json.dumps(response))]
                 
             elif name == "hubspot_search_data":
                 # Extract parameters
@@ -455,6 +477,8 @@ async def main(access_token: Optional[str] = None):
                 data_type = arguments["data_type"]
                 limit = arguments.get("limit", 100)
                 limit = int(limit) if limit is not None else 100
+                after = arguments.get("after")
+                store_all_pages = arguments.get("store_all_pages", False)
                 
                 try:
                     # Call the refresh function
@@ -464,7 +488,9 @@ async def main(access_token: Optional[str] = None):
                         faiss_manager=faiss_manager,
                         leveldb_manager=leveldb_manager,
                         model=embedding_model,
-                        limit=limit
+                        limit=limit,
+                        after=after,
+                        store_all_pages=store_all_pages
                     )
                     
                     return [types.TextContent(type="text", text=json.dumps(result))]

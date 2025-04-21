@@ -168,7 +168,9 @@ def refresh_data(
     faiss_manager: FaissManager,
     leveldb_manager: LevelDBManager,
     model: SentenceTransformer,
-    limit: int = 100
+    limit: int = 100,
+    after: Optional[str] = None,
+    store_all_pages: bool = False
 ) -> Dict[str, Any]:
     """Refresh data from HubSpot API and store in LevelDB and FAISS.
     
@@ -178,34 +180,78 @@ def refresh_data(
         faiss_manager: FAISS manager instance
         leveldb_manager: LevelDB manager instance
         model: SentenceTransformer model to use
-        limit: Maximum number of items to fetch
+        limit: Maximum number of items to fetch per page
+        after: Pagination token for fetching next page
+        store_all_pages: Whether to fetch and store all available pages (caution: may exceed API limits)
         
     Returns:
-        Dictionary with refresh status and timestamp
+        Dictionary with refresh status, timestamp, and pagination token
     """
     try:
-        logger.info(f"Refreshing {data_type} data with limit {limit}")
+        logger.info(f"Refreshing {data_type} data with limit={limit}, after={after}")
+        
+        # Initialize result object
+        result = {
+            "status": "success",
+            "data_type": data_type,
+            "count": 0,
+            "pagination": {"next": {"after": None}}
+        }
         
         # Fetch data from HubSpot API based on data_type
         data = None
+        next_after = None
+        response = None
         
         if data_type == "company":
-            response = hubspot_client.get_recent_companies(limit=limit)
-            data = json.loads(response)
-        elif data_type == "contact":
-            response = hubspot_client.get_recent_contacts(limit=limit)
-            data = json.loads(response)
-        elif data_type == "conversation_thread":
-            response = hubspot_client.get_recent_conversations(limit=limit, refresh_cache=True)
+            # Get companies with pagination
+            response = hubspot_client.get_recent_companies(limit=limit, after=after)
             data = response.get("results", [])
+            next_after = response.get("pagination", {}).get("next", {}).get("after")
+            result["pagination"]["next"]["after"] = next_after
+            
+        elif data_type == "contact":
+            # Get contacts with pagination
+            response = hubspot_client.get_recent_contacts(limit=limit, after=after)
+            data = response.get("results", [])
+            next_after = response.get("pagination", {}).get("next", {}).get("after")
+            result["pagination"]["next"]["after"] = next_after
+            
+        elif data_type == "conversation_thread":
+            # Conversations have pagination support
+            response = hubspot_client.get_recent_conversations(
+                limit=limit, 
+                after=after, 
+                refresh_cache=True
+            )
+            data = response.get("results", [])
+            next_after = response.get("pagination", {}).get("next", {}).get("after")
+            result["pagination"]["next"]["after"] = next_after
+            
         else:
             raise ValueError(f"Unsupported data type: {data_type}")
         
+        # If we received an error in the response
+        if response and "error" in response:
+            logger.error(f"API returned error: {response['error']}")
+            return {
+                "status": "error",
+                "error": response["error"],
+                "data_type": data_type,
+                "pagination": {"next": {"after": None}}
+            }
+        
+        # If no data was returned, return early
+        if not data:
+            logger.info(f"No {data_type} data was returned from API")
+            result["count"] = 0
+            return result
+            
         # Store in LevelDB
         store_in_leveldb(leveldb_manager, data, data_type)
         
         # Store in FAISS
-        metadata_extras = {"limit": limit}
+        metadata_extras = {"limit": limit, "after": after}
         store_in_faiss(faiss_manager, data, data_type, model, metadata_extras)
         
         # Save FAISS index
@@ -213,17 +259,35 @@ def refresh_data(
         
         # Get updated timestamp
         timestamp = leveldb_manager.get_last_updated(data_type)
+        result["timestamp"] = timestamp
+        result["count"] = len(data)
         
-        return {
-            "status": "success",
-            "timestamp": timestamp,
-            "data_type": data_type,
-            "count": len(data) if data else 0
-        }
+        # If we should fetch all pages and there's a next page available
+        if store_all_pages and next_after:
+            logger.info(f"Fetching next page with after={next_after}")
+            next_result = refresh_data(
+                hubspot_client=hubspot_client,
+                data_type=data_type,
+                faiss_manager=faiss_manager,
+                leveldb_manager=leveldb_manager,
+                model=model,
+                limit=limit,
+                after=next_after,
+                store_all_pages=True
+            )
+            
+            # Update count to include all pages
+            if next_result["status"] == "success":
+                result["count"] += next_result["count"]
+                # Take the last page's next token
+                result["pagination"]["next"]["after"] = next_result["pagination"]["next"]["after"]
+        
+        return result
     except Exception as e:
         logger.error(f"Error refreshing {data_type} data: {str(e)}", exc_info=True)
         return {
             "status": "error",
             "error": str(e),
-            "data_type": data_type
+            "data_type": data_type,
+            "pagination": {"next": {"after": None}}
         } 
